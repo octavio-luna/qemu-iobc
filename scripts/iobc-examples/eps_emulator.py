@@ -315,6 +315,7 @@ class I2cSlave:
         """
 
         seq = self._send_new_frame(IOX_CAT_DATA, IOX_CID_DATA_IN, data)
+        print("i2c write seq: ", seq, "Len: ", len(data))
 
         async with self.respc:
             while seq not in self.respd.keys():
@@ -338,6 +339,7 @@ class I2cSlave:
         while True:
             print("i2c waiting for data")
             frame = await self.read_frame()
+            print("i2c frame: ", frame, "size: ", len(frame.data))
 
             if frame.cat == IOX_CAT_DATA and frame.id == IOX_CID_DATA_OUT:
                 buf += frame.data
@@ -498,6 +500,8 @@ def parse_message(data):
     print("Invalid message, unknown command: ", cmd)
     return (default_resp(data) + REJ_INV_CODE)
 
+def buildUartRsp(data):
+    return b'<rsp>' + data + b'</rsp>'
 
 #!/usr/bin/env python3
 #
@@ -893,9 +897,12 @@ async def usart_task():
                 data = await readCommand(usart)
                 print("UART Cmd: ", data)
                 resp = parse_message(data)
-                print("Uart trying write: ", resp)
+                print("UART Resp: ", resp)
+                builtRsp = buildUartRsp(resp)
 
-                await usart.write(resp)
+                print("Uart trying write: ", builtRsp)
+
+                await usart.write(builtRsp)
                 #break
             except UsartStatusException as e:
                 if e.errno == errno.ENXIO:
@@ -930,9 +937,9 @@ async def i2c_task():
         await dev.open()
         #await machine.cont()
 
+        # Wait for start condition from master. We expect a write here.
+        start = await dev.wait_start()
         while True:
-            # Wait for start condition from master. We expect a write here.
-            start = await dev.wait_start()
             assert start.read is False
 
             # Read data from master until stop condition
@@ -943,15 +950,28 @@ async def i2c_task():
             print("Resp: ", resp)
 
             # Wait for start condition from master. We expect a read here.
-            start = await dev.wait_start()
-            assert start.read is True
+            # start = await dev.wait_start()
+            # assert start.read is True
 
             # Write data to master.
+            resp = resp + b'\xFF'
+
             print(f"WRITE[0x{start.dadr:02x}]: {resp}")
-            await dev.write(data)
+            try:
+                for i in range(0, 10):
+                    print(i)
+                    
+                    await dev.write(resp)
+                    time.sleep(1)
+
+                print("Writing FF")
+                await dev.write(b'\xFF')
+            except:
+                print("Error writing")
+                
 
             # Wait for stop condition from master.
-            await dev.wait_stop()
+            #await dev.wait_stop()
 
     finally:
         #await machine.quit()
@@ -960,7 +980,7 @@ async def i2c_task():
         #machine.close()
 
 async def main():
-    await asyncio.gather(usart_task(), i2c_task())
+    await asyncio.gather(i2c_task())#usart_task(), i2c_task())
 
 if __name__ == '__main__':
     asyncio.run(main())
