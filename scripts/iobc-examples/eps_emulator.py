@@ -395,9 +395,12 @@ REJ_PAR_INV=b'\x04'
 REJ_UNAV=b'\x05'
 REJ_INV_SYS=b'\x06'
 INTERAL_ERR=b'\x07'
+NEW=b'\x80'
 
 #COMMANDS HANDLING UTILS
 def default_resp(data: bytes):
+    if len(data) < 4:
+        return b'\x00\x00\x00\x00'
     resp = data[:2] + (data[2]+1).to_bytes(1, byteorder='little') + data[3:]
     return resp
 
@@ -473,16 +476,57 @@ def get_PIU_housekeeping_data(data):
     data_fields =  b'\x00' + VOLT_BRDSUP + TEMP + VIP_DIST_INPUT + VIP_BATT_INPUT + STAT_CH_ON + STAT_CH_OCF + BAT_STAT + BAT_TEMP2 + BAT_TEMP3 + VOLT_VD0 + VOLT_VD1 + VOLT_VD2 + VIP_CH00 + VIP_CH01 + VIP_CH02 + VIP_CH03 + VIP_CH04 + VIP_CH05 + VIP_CH06 + VIP_CH07 + VIP_CH08
     return resp + data_fields
 
+#Maps every channel to a tuple of two values: the first one indicates if the channel is on, and the second one indicates if the channel is force-enabled
+channels_status = {
+    0: [False, False],
+    1: [False, False],
+    2: [False, False],
+    3: [False, False],
+    4: [False, True],
+    5: [False, False]
+}
+
+def outputBusChannelOn(data):
+    print("outputBusChannelOn", data)
+    print("Turning on channel: ", data[4])
+    #TODO: We have to set the channel's supported range
+    status = channels_status[data[4]]
+    if len(status) < 2:
+        status = [False, False]
+    status[0] = True
+    channels_status[data[4]] = status
+    resp = default_resp(data) + ACC
+    return resp
+
+def outputBusChannelOff(data):
+    print("outputBusChannelOff", data)
+    print("Turning off channel: ", data[4])
+    #TODO: We have to set the channel's supported range
+    status = channels_status[data[4]]
+    if len(status) < 2:
+        status = [False, False]
+    if status[1]:
+        #If the channel is force-enabled, we can't turn it off and we have to return a rejection
+        print("Channel is force-enabled, rejecting it")
+        resp = default_resp(data) + REJ
+        return resp
+    status[0] = False
+    channels_status[data[4]] = status
+    resp = default_resp(data) + ACC
+    return resp
+
 command_map = {
     b'\x06': (4, watchDogReset),
-    b'\xA2': (4, get_PIU_housekeeping_data)
+    b'\xA2': (4, get_PIU_housekeeping_data),
+    b'\x16': (5, outputBusChannelOn),
+    b'\x17': (5, outputBusChannelOff)
 }
 
 def parse_message(data):
     """Parse a message from the given byte buffer"""
 
     if len(data) < 4:
-        print("Invalid message")
+        print("Invalid message: ", data)
         return (default_resp(data) + REJ_MISS_PAR)
 
     cmd = data[2]
@@ -947,15 +991,17 @@ async def i2c_task():
             print(f"READ[0x{start.dadr:02x}]:  {data}")
 
             resp = parse_message(data)
-            print("Resp: ", resp)
+            # There's an issue that the master does not recognize the response 
+            #unless the status code gets the value NEW
+            if resp[-1] == ACC:
+                resp = resp[:-1] + NEW
+                print("Resp: ", resp)
 
             # Wait for start condition from master. We expect a read here.
             # start = await dev.wait_start()
             # assert start.read is True
 
             # Write data to master.
-            resp = resp + b'\xFF'
-
             print(f"WRITE[0x{start.dadr:02x}]: {resp}")
             try:
                 for i in range(0, 10):
@@ -964,8 +1010,6 @@ async def i2c_task():
                     await dev.write(resp)
                     time.sleep(1)
 
-                print("Writing FF")
-                await dev.write(b'\xFF')
             except:
                 print("Error writing")
                 
@@ -980,7 +1024,13 @@ async def i2c_task():
         #machine.close()
 
 async def main():
-    await asyncio.gather(i2c_task())#usart_task(), i2c_task())
+    await asyncio.gather(usart_task(), i2c_task())
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except:
+            print("Error starting, sleeping 3 seconds")
+            time.sleep(3)
+            continue
