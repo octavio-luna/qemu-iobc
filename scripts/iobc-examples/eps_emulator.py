@@ -495,7 +495,8 @@ def outputBusChannelOn(data):
         status = [False, False]
     status[0] = True
     channels_status[data[4]] = status
-    resp = default_resp(data) + ACC
+    resp = default_resp(data)
+    resp = resp[:4] + ACC
     return resp
 
 def outputBusChannelOff(data):
@@ -508,18 +509,29 @@ def outputBusChannelOff(data):
     if status[1]:
         #If the channel is force-enabled, we can't turn it off and we have to return a rejection
         print("Channel is force-enabled, rejecting it")
-        resp = default_resp(data) + REJ
+        resp = default_resp(data)
+        resp = resp[:4] + REJ
         return resp
     status[0] = False
     channels_status[data[4]] = status
-    resp = default_resp(data) + ACC
+    resp = default_resp(data)
+    resp = resp[:4] + ACC
+    return resp
+
+
+def testResponseCode(data):
+    print("testResponseCode", data)
+    print("Response code: ", data[4])
+    resp = default_resp(data)
+    resp = resp[:4] + data[4]
     return resp
 
 command_map = {
     b'\x06': (4, watchDogReset),
     b'\xA2': (4, get_PIU_housekeeping_data),
     b'\x16': (5, outputBusChannelOn),
-    b'\x17': (5, outputBusChannelOff)
+    b'\x18': (5, outputBusChannelOff),
+    b'\0x20': (5, testResponseCode)
 }
 
 def parse_message(data):
@@ -982,8 +994,8 @@ async def i2c_task():
         #await machine.cont()
 
         # Wait for start condition from master. We expect a write here.
-        start = await dev.wait_start()
         while True:
+            start = await dev.wait_start()
             assert start.read is False
 
             # Read data from master until stop condition
@@ -993,29 +1005,26 @@ async def i2c_task():
             resp = parse_message(data)
             # There's an issue that the master does not recognize the response 
             #unless the status code gets the value NEW
-            if resp[-1] == ACC:
-                resp = resp[:-1] + NEW
-                print("Resp: ", resp)
+            #if resp[-1] == ACC:
+            resp = resp[:-1] + NEW #TODO: This is weird, it's enmascarating the true response code
+            print("Resp: ", resp)
 
             # Wait for start condition from master. We expect a read here.
-            # start = await dev.wait_start()
-            # assert start.read is True
+            start = await dev.wait_start()
+            assert start.read is True
+            print(f"Writing response. Read bit:{start.read}")
 
             # Write data to master.
             print(f"WRITE[0x{start.dadr:02x}]: {resp}")
             try:
-                for i in range(0, 10):
-                    print(i)
-                    
-                    await dev.write(resp)
-                    time.sleep(1)
-
+                await dev.write(resp)
             except:
                 print("Error writing")
                 
 
             # Wait for stop condition from master.
-            #await dev.wait_stop()
+            await dev.wait_stop()
+            print("Stop received")
 
     finally:
         #await machine.quit()
@@ -1027,10 +1036,4 @@ async def main():
     await asyncio.gather(usart_task(), i2c_task())
 
 if __name__ == '__main__':
-    while True:
-        try:
-            asyncio.run(main())
-        except:
-            print("Error starting, sleeping 3 seconds")
-            time.sleep(3)
-            continue
+    asyncio.run(main())
